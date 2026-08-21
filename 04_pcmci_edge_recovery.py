@@ -20,6 +20,36 @@ TRUE_EDGES = {
 
 VAR_NAMES = ["X", "Y", "Z"]
 
+# ==========================================================
+# 1.1 All possible lagged edges
+# ==========================================================
+
+ALL_POSSIBLE_EDGES = {
+    (source, target, lag)
+    for source in VAR_NAMES
+    for target in VAR_NAMES
+    for lag in [1, 2]
+}
+
+FALSE_EDGES = (
+    ALL_POSSIBLE_EDGES
+    - TRUE_EDGES
+)
+
+print(
+    f"Number of possible edges: "
+    f"{len(ALL_POSSIBLE_EDGES)}"
+)
+
+print(
+    f"Number of true edges: "
+    f"{len(TRUE_EDGES)}"
+)
+
+print(
+    f"Number of false-edge candidates: "
+    f"{len(FALSE_EDGES)}"
+)
 
 # ==========================================================
 # 2. Generate the true causal system
@@ -159,6 +189,7 @@ N_RUNS = 50
 # ==========================================================
 
 edge_records = []
+false_edge_records = []
 
 
 # ==========================================================
@@ -210,6 +241,25 @@ for noise_scale in MEASUREMENT_NOISE_LEVELS:
                 }
             )
 
+        # 对所有本来不存在的边进行检查：
+        # 这一次运行中有没有被 PCMCI+ 错误发现
+
+        for edge in sorted(FALSE_EDGES):
+            appeared = int(
+                edge in pred_edges
+            )
+
+            false_edge_records.append(
+                {
+                    "measurement_noise": noise_scale,
+                    "seed": seed,
+                    "source": edge[0],
+                    "target": edge[1],
+                    "lag": edge[2],
+                    "appeared": appeared
+                }
+            )
+
 
 # ==========================================================
 # 8. Convert to DataFrame
@@ -218,7 +268,9 @@ for noise_scale in MEASUREMENT_NOISE_LEVELS:
 df_edges = pd.DataFrame(
     edge_records
 )
-
+df_false_edges = pd.DataFrame(
+    false_edge_records
+)
 
 # ==========================================================
 # 9. Compute edge recovery rate
@@ -247,6 +299,32 @@ edge_summary = (
     .reset_index()
 )
 
+# ==========================================================
+# 9.1 Compute false-edge appearance rate
+# ==========================================================
+
+false_edge_summary = (
+    df_false_edges
+    .groupby(
+        [
+            "measurement_noise",
+            "source",
+            "target",
+            "lag"
+        ]
+    )
+    .agg(
+        appearance_rate=(
+            "appeared",
+            "mean"
+        ),
+        appeared_count=(
+            "appeared",
+            "sum"
+        )
+    )
+    .reset_index()
+)
 
 # ==========================================================
 # 10. Create readable edge labels
@@ -261,6 +339,14 @@ edge_summary["edge"] = (
     + "(t)"
 )
 
+false_edge_summary["edge"] = (
+    false_edge_summary["source"]
+    + "(t-"
+    + false_edge_summary["lag"].astype(str)
+    + ") -> "
+    + false_edge_summary["target"]
+    + "(t)"
+)
 
 # ==========================================================
 # 11. Print detailed summary
@@ -294,6 +380,43 @@ for noise_scale in MEASUREMENT_NOISE_LEVELS:
             f"{row['recovery_rate']:.3f}"
         )
 
+# ==========================================================
+# False-edge appearance summary
+# ==========================================================
+
+print("\n\n======================================================")
+print("False Edge Appearance Rate")
+print("======================================================")
+
+for noise_scale in MEASUREMENT_NOISE_LEVELS:
+
+    print(
+        f"\nMeasurement noise = "
+        f"{noise_scale}"
+    )
+
+    subset = false_edge_summary[
+        false_edge_summary[
+            "measurement_noise"
+        ] == noise_scale
+    ]
+
+    # 按错误出现率从高到低排列
+    subset = subset.sort_values(
+        by="appearance_rate",
+        ascending=False
+    )
+
+    for _, row in subset.iterrows():
+
+        print(
+            f"{row['edge']:20s} | "
+            f"Appeared "
+            f"{int(row['appeared_count']):2d}"
+            f"/{N_RUNS} | "
+            f"Rate = "
+            f"{row['appearance_rate']:.3f}"
+        )
 
 # ==========================================================
 # 12. Pivot table
@@ -309,6 +432,15 @@ pivot_table = (
     .reset_index()
 )
 
+false_pivot_table = (
+    false_edge_summary
+    .pivot(
+        index="measurement_noise",
+        columns="edge",
+        values="appearance_rate"
+    )
+    .reset_index()
+)
 
 print("\n\n======================================================")
 print("Edge Recovery Matrix")
@@ -320,6 +452,15 @@ print(
     )
 )
 
+print("\n\n======================================================")
+print("False Edge Appearance Matrix")
+print("======================================================")
+
+print(
+    false_pivot_table.to_string(
+        index=False
+    )
+)
 
 # ==========================================================
 # 13. Save results
@@ -339,6 +480,20 @@ pivot_table.to_csv(
     "pcmci_edge_recovery_matrix.csv",
     index=False
 )
+df_false_edges.to_csv(
+    "pcmci_false_edge_raw.csv",
+    index=False
+)
+
+false_edge_summary.to_csv(
+    "pcmci_false_edge_summary.csv",
+    index=False
+)
+
+false_pivot_table.to_csv(
+    "pcmci_false_edge_matrix.csv",
+    index=False
+)
 
 print("\nResults saved:")
 print(
@@ -349,4 +504,15 @@ print(
 )
 print(
     "  pcmci_edge_recovery_matrix.csv"
+)
+print(
+    "  pcmci_false_edge_raw.csv"
+)
+
+print(
+    "  pcmci_false_edge_summary.csv"
+)
+
+print(
+    "  pcmci_false_edge_matrix.csv"
 )
