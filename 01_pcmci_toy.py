@@ -10,7 +10,7 @@ from tigramite.independence_tests.parcorr import ParCorr
 # ==============================
 
 SEED = 40
-T = 50
+T = 60
 BURN_IN = 200
 
 rng = np.random.default_rng(SEED)
@@ -53,6 +53,17 @@ for t in range(2, total_T):
 # 丢弃前 200 个过渡样本
 data = data[BURN_IN:]
 
+# 生成系统之后，再加入“测量噪声”
+measurement_noise_scale = 0.5
+
+measurement_noise = rng.normal(
+    loc=0.0,
+    scale=measurement_noise_scale,
+    size=data.shape
+)
+
+data_observed = data + measurement_noise
+
 var_names = ["X", "Y", "Z"]
 
 print("Data shape:", data.shape)
@@ -82,7 +93,7 @@ plt.show()
 # ==============================
 
 dataframe = pp.DataFrame(
-    data=data,
+    data=data_observed,
     var_names=var_names
 )
 
