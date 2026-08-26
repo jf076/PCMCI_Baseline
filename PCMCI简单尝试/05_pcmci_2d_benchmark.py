@@ -22,7 +22,7 @@ VAR_NAMES = ["X", "Y", "Z"]
 
 
 # ==========================================================
-# 2. Generate the latent / true causal system
+# 2. Generate true causal system
 # ==========================================================
 
 def generate_true_data(T, seed, burn_in=200):
@@ -33,7 +33,6 @@ def generate_true_data(T, seed, burn_in=200):
 
     data = np.zeros((total_T, 3))
 
-    # 系统本身的过程噪声 / innovation noise
     process_noise = rng.normal(
         loc=0.0,
         scale=1.0,
@@ -177,11 +176,16 @@ def evaluate_graph(pred_edges):
 # 6. Benchmark settings
 # ==========================================================
 
-T = 300
+T_VALUES = [
+    50,
+    100,
+    200,
+    500,
+    1000
+]
 
 MEASUREMENT_NOISE_LEVELS = [
     0.0,
-    0.25,
     0.5,
     1.0,
     2.0,
@@ -194,81 +198,78 @@ all_results = []
 
 
 # ==========================================================
-# 7. Run measurement-noise benchmark
+# 7. Run 2D benchmark
 # ==========================================================
 
-for noise_scale in MEASUREMENT_NOISE_LEVELS:
+for T in T_VALUES:
 
-    print("\n======================================")
-    print(
-        f"Measurement noise scale = "
-        f"{noise_scale}"
-    )
-    print("======================================")
+    for noise_scale in MEASUREMENT_NOISE_LEVELS:
 
-    for seed in range(N_RUNS):
-
-        # Step 1:
-        # 先生成真实系统
-        true_data = generate_true_data(
-            T=T,
-            seed=seed
-        )
-
-        # Step 2:
-        # 再在观测阶段加入额外测量噪声
-        observed_data = add_measurement_noise(
-            true_data=true_data,
-            noise_scale=noise_scale,
-
-            # 与系统生成 seed 分开，
-            # 避免完全使用同一随机序列
-            seed=10000 + seed
-        )
-
-        # Step 3:
-        # PCMCI+ 只能看到 observed_data
-        pred_edges = run_pcmci(
-            observed_data
-        )
-
-        (
-            TP,
-            FP,
-            FN,
-            precision,
-            recall,
-            f1
-        ) = evaluate_graph(
-            pred_edges
-        )
-
-        all_results.append(
-            {
-                "T": T,
-                "measurement_noise": noise_scale,
-                "seed": seed,
-                "TP": TP,
-                "FP": FP,
-                "FN": FN,
-                "Precision": precision,
-                "Recall": recall,
-                "F1": f1
-            }
-        )
-
+        print("\n======================================")
         print(
-            f"noise={noise_scale:4.2f} | "
-            f"seed={seed:2d} | "
-            f"TP={TP} FP={FP} FN={FN} | "
-            f"P={precision:.3f} "
-            f"R={recall:.3f} "
-            f"F1={f1:.3f}"
+            f"T = {T}, "
+            f"Measurement noise = {noise_scale}"
         )
+        print("======================================")
+
+        for seed in range(N_RUNS):
+
+            # 真实系统
+            true_data = generate_true_data(
+                T=T,
+                seed=seed
+            )
+
+            # 加测量噪声
+            observed_data = add_measurement_noise(
+                true_data=true_data,
+                noise_scale=noise_scale,
+                seed=10000 + seed
+            )
+
+            # PCMCI+
+            pred_edges = run_pcmci(
+                observed_data
+            )
+
+            (
+                TP,
+                FP,
+                FN,
+                precision,
+                recall,
+                f1
+            ) = evaluate_graph(
+                pred_edges
+            )
+
+            all_results.append(
+                {
+                    "T": T,
+                    "measurement_noise": noise_scale,
+                    "seed": seed,
+                    "TP": TP,
+                    "FP": FP,
+                    "FN": FN,
+                    "Precision": precision,
+                    "Recall": recall,
+                    "F1": f1
+                }
+            )
+
+            print(
+                f"T={T:4d} | "
+                f"noise={noise_scale:4.1f} | "
+                f"seed={seed:2d} | "
+                f"TP={TP} FP={FP} FN={FN} | "
+                f"P={precision:.3f} "
+                f"R={recall:.3f} "
+                f"F1={f1:.3f}"
+            )
 
 
 # ==========================================================
-# 8. Raw results
+# 8. Convert to DataFrame
 # ==========================================================
 
 df = pd.DataFrame(
@@ -277,12 +278,15 @@ df = pd.DataFrame(
 
 
 # ==========================================================
-# 9. Mean ± Std
+# 9. Mean ± Std for each T × noise combination
 # ==========================================================
 
 summary = (
     df.groupby(
-        "measurement_noise"
+        [
+            "T",
+            "measurement_noise"
+        ]
     )
     .agg(
         Precision_mean=(
@@ -321,13 +325,14 @@ summary = (
 # ==========================================================
 
 print("\n\n======================================================")
-print("Measurement Noise Robustness: Mean ± Std")
+print("2D Benchmark Summary: Mean ± Std")
 print("======================================================")
 
 for _, row in summary.iterrows():
 
     print(
-        f"Noise={row['measurement_noise']:4.2f} | "
+        f"T={int(row['T']):4d} | "
+        f"Noise={row['measurement_noise']:4.1f} | "
         f"Precision="
         f"{row['Precision_mean']:.3f} ± "
         f"{row['Precision_std']:.3f} | "
@@ -341,23 +346,105 @@ for _, row in summary.iterrows():
 
 
 # ==========================================================
-# 11. Save results
+# 11. F1 matrix
+# ==========================================================
+
+f1_matrix = (
+    summary
+    .pivot(
+        index="T",
+        columns="measurement_noise",
+        values="F1_mean"
+    )
+)
+
+
+print("\n\n======================================================")
+print("F1 Mean Matrix")
+print("Rows = T")
+print("Columns = Measurement Noise")
+print("======================================================")
+
+print(
+    f1_matrix.to_string()
+)
+
+
+# ==========================================================
+# 12. Recall matrix
+# ==========================================================
+
+recall_matrix = (
+    summary
+    .pivot(
+        index="T",
+        columns="measurement_noise",
+        values="Recall_mean"
+    )
+)
+
+
+print("\n\n======================================================")
+print("Recall Mean Matrix")
+print("======================================================")
+
+print(
+    recall_matrix.to_string()
+)
+
+
+# ==========================================================
+# 13. Precision matrix
+# ==========================================================
+
+precision_matrix = (
+    summary
+    .pivot(
+        index="T",
+        columns="measurement_noise",
+        values="Precision_mean"
+    )
+)
+
+
+print("\n\n======================================================")
+print("Precision Mean Matrix")
+print("======================================================")
+
+print(
+    precision_matrix.to_string()
+)
+
+
+# ==========================================================
+# 14. Save results
 # ==========================================================
 
 df.to_csv(
-    "pcmci_measurement_noise_raw.csv",
+    "pcmci_2d_benchmark_raw.csv",
     index=False
 )
 
 summary.to_csv(
-    "pcmci_measurement_noise_summary.csv",
+    "pcmci_2d_benchmark_summary.csv",
     index=False
 )
 
+f1_matrix.to_csv(
+    "pcmci_2d_f1_matrix.csv"
+)
+
+recall_matrix.to_csv(
+    "pcmci_2d_recall_matrix.csv"
+)
+
+precision_matrix.to_csv(
+    "pcmci_2d_precision_matrix.csv"
+)
+
 print("\nResults saved:")
-print(
-    "  pcmci_measurement_noise_raw.csv"
-)
-print(
-    "  pcmci_measurement_noise_summary.csv"
-)
+print("  pcmci_2d_benchmark_raw.csv")
+print("  pcmci_2d_benchmark_summary.csv")
+print("  pcmci_2d_f1_matrix.csv")
+print("  pcmci_2d_recall_matrix.csv")
+print("  pcmci_2d_precision_matrix.csv")
