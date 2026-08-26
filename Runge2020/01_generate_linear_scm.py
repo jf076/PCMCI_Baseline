@@ -1,21 +1,33 @@
 import numpy as np
 
+
+# ============================================================
+# 1. Build coefficient matrices
+# ============================================================
+
 def build_coefficient_matrices(
     true_edges,
     n_variables,
     tau_max,
 ):
     """
-    Build B_0, ..., B_tau_max for
+    Build B_0, B_1, ..., B_tau_max for the linear SCM:
 
-        X_t = B_0 X_t
-              + B_1 X_{t-1}
-              + ...
-              + B_p X_{t-p}
-              + noise
+        X_t
+        = B_0 X_t
+        + B_1 X_{t-1}
+        + ...
+        + B_p X_{t-p}
+        + noise
 
     Matrix convention:
         B_lag[target, source] = coefficient
+
+    Example:
+        X2(t-3) -> X4(t), coefficient = 0.3
+
+    corresponds to:
+        B_3[4, 2] = 0.3
     """
 
     B_mats = [
@@ -37,14 +49,53 @@ def build_coefficient_matrices(
 
     return B_mats
 
+
+# ============================================================
+# 2. Stationarity check
+# ============================================================
+
 def check_stationarity(
     true_edges,
     n_variables,
     tau_max,
 ):
     """
-    Check stationarity of the linear SCM using
-    the spectral radius of the VAR companion matrix.
+    Check stationarity of the linear SCM.
+
+    Original model:
+
+        X_t
+        = B_0 X_t
+        + B_1 X_{t-1}
+        + ...
+        + B_p X_{t-p}
+        + noise
+
+    Rearranging:
+
+        (I - B_0) X_t
+        = B_1 X_{t-1}
+        + ...
+        + B_p X_{t-p}
+        + noise
+
+    Therefore:
+
+        X_t
+        = A_1 X_{t-1}
+        + ...
+        + A_p X_{t-p}
+        + transformed_noise
+
+    where:
+
+        A_lag = (I - B_0)^(-1) B_lag
+
+    Then construct the VAR(p) companion matrix.
+
+    Stationarity criterion:
+
+        spectral_radius < 1
 
     Returns
     -------
@@ -60,10 +111,7 @@ def check_stationarity(
     )
 
     # --------------------------------------------------------
-    # Remove contemporaneous effects:
-    #
-    # (I - B0) X_t
-    #     = B1 X_{t-1} + ... + Bp X_{t-p} + noise
+    # Remove contemporaneous effects
     # --------------------------------------------------------
 
     identity = np.eye(n_variables)
@@ -76,6 +124,11 @@ def check_stationarity(
 
     for lag in range(1, tau_max + 1):
 
+        # Equivalent to:
+        #
+        # inv(I - B0) @ B_lag
+        #
+        # but solve() is numerically preferable.
         A_lag = np.linalg.solve(
             instantaneous_matrix,
             B_mats[lag],
@@ -97,16 +150,17 @@ def check_stationarity(
 
     # First block row:
     #
-    # [A1 A2 ... Ap]
+    # [A1  A2  ...  Ap]
     companion[:n_variables, :] = np.hstack(
         A_mats
     )
 
     # Lower identity blocks:
     #
-    # [I 0 ...]
-    # [0 I ...]
-    # ...
+    # [I 0 0 ...]
+    # [0 I 0 ...]
+    # [0 0 I ...]
+    #
     if tau_max > 1:
 
         companion[
@@ -116,12 +170,18 @@ def check_stationarity(
             n_variables * (tau_max - 1)
         )
 
+    # --------------------------------------------------------
+    # Spectral radius
+    # --------------------------------------------------------
+
     eigenvalues = np.linalg.eigvals(
         companion
     )
 
     spectral_radius = float(
-        np.max(np.abs(eigenvalues))
+        np.max(
+            np.abs(eigenvalues)
+        )
     )
 
     is_stationary = (
@@ -135,6 +195,10 @@ def check_stationarity(
     )
 
 
+# ============================================================
+# 3. Generate one candidate SCM structure
+# ============================================================
+
 def generate_candidate_structure(
     rng,
     n_variables,
@@ -143,30 +207,84 @@ def generate_candidate_structure(
     contemp_fraction=0.3,
 ):
     """
-    Generate one candidate linear SCM structure.
+    Generate ONE candidate linear SCM structure.
 
     This function generates:
-    1. auto-dependencies
-    2. contemporaneous DAG cross-links
-    3. lagged cross-links
 
-    It does NOT check stationarity
-    and does NOT simulate time series data.
+    1. Auto-dependencies
+    2. Contemporaneous cross-links
+    3. Lagged cross-links
+
+    It does NOT:
+    - check stationarity
+    - generate noise
+    - simulate time-series observations
+
+    Parameters
+    ----------
+    rng : np.random.Generator
+        Random number generator.
+
+    n_variables : int
+        Number of variables N.
+
+    a_max : float
+        Upper bound of autoregressive coefficients.
+
+    tau_max : int
+        Maximum true time lag.
+
+    contemp_fraction : float
+        Fraction of cross-links treated as contemporaneous.
+        Current clear-reproduction choice: 0.3.
+
+    Returns
+    -------
+    true_edges : list[dict]
+        Ground-truth causal edges.
+
+    model_info : dict
+        Metadata describing the generated SCM.
     """
 
     # ========================================================
-    # 1. Number of cross-links
+    # 3.1 Number of cross-links
     # ========================================================
 
+    # Runge (2020):
+    #
+    # L = floor(1.5 * N)
+    #
+    # except N = 2, where L = 1.
     if n_variables == 2:
+
         n_cross_links = 1
+
     else:
+
         n_cross_links = int(
-            np.floor(1.5 * n_variables)
+            np.floor(
+                1.5 * n_variables
+            )
         )
 
-    # Our current clear-reproduction choice:
-    # approximately 30% contemporaneous.
+    # --------------------------------------------------------
+    # Current implementation choice:
+    #
+    # approximately 30% of cross-links are contemporaneous.
+    #
+    # For N=5:
+    #
+    # L = floor(1.5 * 5) = 7
+    #
+    # round(0.3 * 7) = 2 contemporaneous
+    # remaining 5 are lagged.
+    #
+    # Paper states "30%" but does not specify in the main text
+    # whether this is implemented as an exact rounded count
+    # or Bernoulli sampling edge-by-edge.
+    # --------------------------------------------------------
+
     n_contemp = int(
         round(
             contemp_fraction
@@ -175,13 +293,21 @@ def generate_candidate_structure(
     )
 
     n_lagged_cross = (
-        n_cross_links - n_contemp
+        n_cross_links
+        - n_contemp
     )
 
     # ========================================================
-    # 2. Autoregressive coefficients
+    # 3.2 Autoregressive coefficients
     # ========================================================
 
+    # Runge (2020):
+    #
+    # a_j ~ Uniform(
+    #     max(0, a - 0.3),
+    #     a
+    # )
+    #
     a_low = max(
         0.0,
         a_max - 0.3,
@@ -195,6 +321,10 @@ def generate_candidate_structure(
 
     true_edges = []
 
+    # Every variable receives:
+    #
+    # X_j(t-1) -> X_j(t)
+    #
     for j in range(n_variables):
 
         true_edges.append(
@@ -210,9 +340,16 @@ def generate_candidate_structure(
         )
 
     # ========================================================
-    # 3. Contemporaneous DAG
+    # 3.3 Contemporaneous DAG
     # ========================================================
 
+    # Random topological order.
+    #
+    # Only allow edges from an earlier node
+    # to a later node in this order.
+    #
+    # This guarantees that the contemporaneous
+    # graph is acyclic.
     topological_order = rng.permutation(
         n_variables
     )
@@ -235,10 +372,15 @@ def generate_candidate_structure(
             )
 
             contemp_candidates.append(
-                (source, target)
+                (
+                    source,
+                    target,
+                )
             )
 
-    selected_indices = rng.choice(
+    # Randomly choose the required number
+    # of contemporaneous cross-links.
+    selected_contemp_indices = rng.choice(
         len(contemp_candidates),
         size=n_contemp,
         replace=False,
@@ -246,23 +388,27 @@ def generate_candidate_structure(
 
     contemp_edges = [
         contemp_candidates[int(idx)]
-        for idx in selected_indices
+        for idx
+        in selected_contemp_indices
     ]
 
+    # Assign coefficients:
+    #
+    # c ~ +/- Uniform(0.1, 0.5)
+    #
     for source, target in contemp_edges:
 
         magnitude = rng.uniform(
-            0.1,
-            0.5,
+            low=0.1,
+            high=0.5,
         )
 
         sign = rng.choice(
             [-1.0, 1.0]
         )
 
-        coefficient = (
-            float(sign)
-            * float(magnitude)
+        coefficient = float(
+            sign * magnitude
         )
 
         true_edges.append(
@@ -271,13 +417,12 @@ def generate_candidate_structure(
                 "target": target,
                 "lag": 0,
                 "coefficient": coefficient,
-                "edge_type":
-                    "contemporaneous",
+                "edge_type": "contemporaneous",
             }
         )
 
     # ========================================================
-    # 4. Lagged cross-links
+    # 3.4 Lagged cross-links
     # ========================================================
 
     lagged_candidates = []
@@ -286,9 +431,15 @@ def generate_candidate_structure(
 
         for target in range(n_variables):
 
+            # Cross-link:
+            #
+            # source != target
+            #
             if source == target:
                 continue
 
+            # lag = 1, ..., tau_max
+            #
             for lag in range(
                 1,
                 tau_max + 1,
@@ -302,12 +453,17 @@ def generate_candidate_structure(
                     )
                 )
 
-    selected_lagged_indices = (
-        rng.choice(
-            len(lagged_candidates),
-            size=n_lagged_cross,
-            replace=False,
-        )
+    # Draw lag-specific links without replacement.
+    #
+    # Therefore an identical:
+    #
+    # (source, target, lag)
+    #
+    # cannot occur twice.
+    selected_lagged_indices = rng.choice(
+        len(lagged_candidates),
+        size=n_lagged_cross,
+        replace=False,
     )
 
     lagged_edges = [
@@ -316,6 +472,7 @@ def generate_candidate_structure(
         in selected_lagged_indices
     ]
 
+    # Assign coefficients
     for (
         source,
         target,
@@ -323,17 +480,16 @@ def generate_candidate_structure(
     ) in lagged_edges:
 
         magnitude = rng.uniform(
-            0.1,
-            0.5,
+            low=0.1,
+            high=0.5,
         )
 
         sign = rng.choice(
             [-1.0, 1.0]
         )
 
-        coefficient = (
-            float(sign)
-            * float(magnitude)
+        coefficient = float(
+            sign * magnitude
         )
 
         true_edges.append(
@@ -342,23 +498,27 @@ def generate_candidate_structure(
                 "target": target,
                 "lag": lag,
                 "coefficient": coefficient,
-                "edge_type":
-                    "lagged_cross",
+                "edge_type": "lagged_cross",
             }
         )
 
     # ========================================================
-    # 5. Model metadata
+    # 3.5 Save model information
     # ========================================================
 
     model_info = {
-        "auto_coeffs": auto_coeffs,
+        "auto_coeffs":
+            auto_coeffs,
+
         "topological_order":
             topological_order,
+
         "n_cross_links":
             n_cross_links,
+
         "n_contemporaneous":
             n_contemp,
+
         "n_lagged_cross":
             n_lagged_cross,
     }
@@ -368,459 +528,684 @@ def generate_candidate_structure(
         model_info,
     )
 
-# ============================================================
-# Runge (2020) linear Gaussian simulation: default parameters
-# ============================================================
+def simulate_linear_scm(
+    rng,
+    true_edges,
+    topological_order,
+    n_variables,
+    n_samples,
+    tau_max,
+    burn_in=500,
+):
+    """
+    Simulate observations from an accepted stationary
+    linear Gaussian SCM.
 
-N = 5
-T = 500
-A_MAX = 0.95
-TAU_TRUE_MAX = 5
-SEED = 0
+    Model:
 
-# Number of cross-links in Runge (2020):
-# L = floor(1.5 * N)
-N_CROSS_LINKS = int(np.floor(1.5 * N))
+        X_j(t)
+        = sum(auto effects)
+        + sum(lagged cross effects)
+        + sum(contemporaneous effects)
+        + eta_j(t)
 
-print("N =", N)
-print("T =", T)
-print("a =", A_MAX)
-print("true max lag =", TAU_TRUE_MAX)
-print("number of cross-links =", N_CROSS_LINKS)
+    with:
 
-rng = np.random.default_rng(SEED)
+        eta_j(t) ~ N(0, sigma_j^2)
 
-a_low = max(0.0, A_MAX - 0.3)
+    and:
 
-auto_coeffs = rng.uniform(
-    low=a_low,
-    high=A_MAX,
-    size=N
-)
+        sigma_j ~ Uniform(0.5, 2.0)
 
-print("\nAutoregressive coefficients:")
-for j, coeff in enumerate(auto_coeffs):
-    print(f"X{j}: {coeff:.4f}")
+    Parameters
+    ----------
+    rng : np.random.Generator
+        Random number generator.
 
-true_edges = []
+    true_edges : list[dict]
+        Ground-truth causal edges.
 
-for j in range(N):
-    true_edges.append(
-        {
-            "source": j,
-            "target": j,
-            "lag": 1,
-            "coefficient": auto_coeffs[j],
-            "edge_type": "auto",
-        }
+    topological_order : array-like
+        Topological order of contemporaneous DAG.
+
+    n_variables : int
+        Number of variables.
+
+    n_samples : int
+        Number of observations kept after burn-in.
+
+    tau_max : int
+        Maximum true lag.
+
+    burn_in : int
+        Number of initial simulated observations discarded.
+
+    Returns
+    -------
+    data : np.ndarray
+        Final observed time series with shape
+        (n_samples, n_variables).
+
+    noise_stds : np.ndarray
+        Gaussian noise standard deviation for each variable.
+    """
+
+    # ========================================================
+    # 1. Noise standard deviations
+    # ========================================================
+
+    noise_stds = rng.uniform(
+        low=0.5,
+        high=2.0,
+        size=n_variables,
     )
 
-print("\nAuto-dependency ground truth:")
+    # ========================================================
+    # 2. Allocate simulation array
+    # ========================================================
 
-for edge in true_edges:
-    print(
-        f"X{edge['source']}(t-{edge['lag']}) "
-        f"-> X{edge['target']}(t), "
-        f"coef={edge['coefficient']:.4f}"
+    total_t = (
+        burn_in
+        + n_samples
     )
 
-N_CONTEMP = int(round(0.3 * N_CROSS_LINKS))
-N_LAGGED_CROSS = N_CROSS_LINKS - N_CONTEMP
-
-print("\nCross-link allocation:")
-print("contemporaneous =", N_CONTEMP)
-print("lagged cross-links =", N_LAGGED_CROSS)
-
-topological_order = rng.permutation(N)
-
-print("\nContemporaneous topological order:")
-print(topological_order)
-
-contemp_candidates = []
-
-for pos_i in range(N):
-    for pos_j in range(pos_i + 1, N):
-
-        source = int(topological_order[pos_i])
-        target = int(topological_order[pos_j])
-
-        contemp_candidates.append(
-            (source, target)
-        )
-
-print("\nPossible contemporaneous DAG edges:")
-print(contemp_candidates)
-
-selected_indices = rng.choice(
-    len(contemp_candidates),
-    size=N_CONTEMP,
-    replace=False
-)
-
-contemp_edges = [
-    contemp_candidates[idx]
-    for idx in selected_indices
-]
-
-print("\nSelected contemporaneous edges:")
-
-for source, target in contemp_edges:
-    print(f"X{source}(t) -> X{target}(t)")
-
-for source, target in contemp_edges:
-
-    magnitude = rng.uniform(0.1, 0.5)
-    sign = rng.choice([-1.0, 1.0])
-
-    coefficient = sign * magnitude
-
-    true_edges.append(
-        {
-            "source": source,
-            "target": target,
-            "lag": 0,
-            "coefficient": coefficient,
-            "edge_type": "contemporaneous",
-        }
+    data_full = np.zeros(
+        (
+            total_t,
+            n_variables,
+        ),
+        dtype=float,
     )
 
-print("\nCurrent Ground Truth:")
-print("-" * 60)
+    # ========================================================
+    # 3. Split edges by type
+    # ========================================================
 
-for edge in true_edges:
+    auto_edges = [
+        edge
+        for edge in true_edges
+        if edge["edge_type"] == "auto"
+    ]
 
-    source = edge["source"]
-    target = edge["target"]
-    lag = edge["lag"]
-    coef = edge["coefficient"]
-    edge_type = edge["edge_type"]
+    lagged_edges = [
+        edge
+        for edge in true_edges
+        if edge["edge_type"] == "lagged_cross"
+    ]
 
-    if lag == 0:
-        relation = f"X{source}(t) -> X{target}(t)"
-    else:
-        relation = f"X{source}(t-{lag}) -> X{target}(t)"
+    contemp_edges = [
+        edge
+        for edge in true_edges
+        if edge["edge_type"] == "contemporaneous"
+    ]
 
-    print(
-        f"{relation:<22} "
-        f"coef={coef:+.4f} "
-        f"type={edge_type}"
-    )
+    # ========================================================
+    # 4. Simulate time series
+    # ========================================================
 
-# ============================================================
-# Generate lagged cross-links
-# ============================================================
+    for t in range(
+        tau_max,
+        total_t,
+    ):
 
-lagged_candidates = []
+        # Contemporaneous variables must be generated
+        # according to the DAG topological order.
+        for j_raw in topological_order:
 
-for source in range(N):
-    for target in range(N):
+            j = int(j_raw)
 
-        # Cross-link means source and target must be different
-        if source == target:
-            continue
+            # ------------------------------------------------
+            # Auto-dependency contribution
+            # ------------------------------------------------
 
-        for lag in range(1, TAU_TRUE_MAX + 1):
-            lagged_candidates.append(
-                (source, target, lag)
+            auto_term = 0.0
+
+            for edge in auto_edges:
+
+                if edge["target"] != j:
+                    continue
+
+                source = edge["source"]
+                lag = edge["lag"]
+                coefficient = edge["coefficient"]
+
+                auto_term += (
+                    coefficient
+                    * data_full[
+                        t - lag,
+                        source,
+                    ]
+                )
+
+            # ------------------------------------------------
+            # Lagged cross-link contribution
+            # ------------------------------------------------
+
+            lagged_term = 0.0
+
+            for edge in lagged_edges:
+
+                if edge["target"] != j:
+                    continue
+
+                source = edge["source"]
+                lag = edge["lag"]
+                coefficient = edge["coefficient"]
+
+                lagged_term += (
+                    coefficient
+                    * data_full[
+                        t - lag,
+                        source,
+                    ]
+                )
+
+            # ------------------------------------------------
+            # Contemporaneous contribution
+            # ------------------------------------------------
+
+            contemp_term = 0.0
+
+            for edge in contemp_edges:
+
+                if edge["target"] != j:
+                    continue
+
+                source = edge["source"]
+                coefficient = edge["coefficient"]
+
+                contemp_term += (
+                    coefficient
+                    * data_full[
+                        t,
+                        source,
+                    ]
+                )
+
+            # ------------------------------------------------
+            # Gaussian dynamical noise
+            # ------------------------------------------------
+
+            noise_term = rng.normal(
+                loc=0.0,
+                scale=noise_stds[j],
             )
 
-print("\nNumber of possible lagged cross-links:")
-print(len(lagged_candidates))
+            # ------------------------------------------------
+            # Structural equation
+            # ------------------------------------------------
 
-selected_lagged_indices = rng.choice(
-    len(lagged_candidates),
-    size=N_LAGGED_CROSS,
-    replace=False
-)
+            data_full[t, j] = (
+                auto_term
+                + lagged_term
+                + contemp_term
+                + noise_term
+            )
 
-lagged_edges = [
-    lagged_candidates[idx]
-    for idx in selected_lagged_indices
-]
-print("\nSelected lagged cross-links:")
+    # ========================================================
+    # 5. Discard burn-in
+    # ========================================================
 
-for source, target, lag in lagged_edges:
-    print(
-        f"X{source}(t-{lag}) -> X{target}(t)"
+    data = data_full[
+        burn_in:
+    ].copy()
+
+    return (
+        data,
+        noise_stds,
     )
 
-for source, target, lag in lagged_edges:
+def generate_linear_scm(
+    n_variables=5,
+    n_samples=500,
+    a_max=0.95,
+    tau_max=5,
+    seed=0,
+    burn_in=500,
+    contemp_fraction=0.3,
+    max_attempts=1000,
+):
+    """
+    Generate one stationary linear Gaussian SCM dataset.
 
-    magnitude = rng.uniform(0.1, 0.5)
-    sign = rng.choice([-1.0, 1.0])
+    Workflow
+    --------
+    1. Initialize random number generator.
+    2. Generate candidate SCM structure.
+    3. Check stationarity.
+    4. Reject non-stationary candidates.
+    5. Simulate Gaussian time series from the first
+       accepted stationary SCM.
 
-    coefficient = sign * magnitude
+    Returns
+    -------
+    data : np.ndarray
+        Observational time series.
+        Shape: (n_samples, n_variables)
 
-    true_edges.append(
-        {
-            "source": source,
-            "target": target,
-            "lag": lag,
-            "coefficient": coefficient,
-            "edge_type": "lagged_cross",
-        }
-    )
+    true_edges : list[dict]
+        Ground-truth causal edges.
 
-print("\nComplete Ground Truth:")
-print("-" * 70)
+    model_info : dict
+        Information about the accepted SCM, including:
+        - autoregressive coefficients
+        - topological order
+        - noise standard deviations
+        - spectral radius
+        - number of generation attempts
+        - model parameters
+    """
 
-for edge in true_edges:
+    # ========================================================
+    # 1. Initialize random number generator ONCE
+    # ========================================================
 
-    source = edge["source"]
-    target = edge["target"]
-    lag = edge["lag"]
-    coef = edge["coefficient"]
-    edge_type = edge["edge_type"]
+    rng = np.random.default_rng(seed)
 
-    if lag == 0:
-        relation = f"X{source}(t) -> X{target}(t)"
-    else:
-        relation = f"X{source}(t-{lag}) -> X{target}(t)"
+    # ========================================================
+    # 2. Rejection sampling
+    # ========================================================
 
-    print(
-        f"{relation:<24}"
-        f"coef={coef:+.4f}   "
-        f"type={edge_type}"
-    )
+    accepted = False
 
-n_auto = sum(
-    edge["edge_type"] == "auto"
-    for edge in true_edges
-)
+    for attempt in range(
+        1,
+        max_attempts + 1,
+    ):
 
-n_contemp = sum(
-    edge["edge_type"] == "contemporaneous"
-    for edge in true_edges
-)
+        true_edges, model_info = (
+            generate_candidate_structure(
+                rng=rng,
+                n_variables=n_variables,
+                a_max=a_max,
+                tau_max=tau_max,
+                contemp_fraction=contemp_fraction,
+            )
+        )
 
-n_lagged = sum(
-    edge["edge_type"] == "lagged_cross"
-    for edge in true_edges
-)
+        (
+            is_stationary,
+            spectral_radius,
+            B_mats,
+        ) = check_stationarity(
+            true_edges=true_edges,
+            n_variables=n_variables,
+            tau_max=tau_max,
+        )
 
-print("\nGround Truth summary:")
-print("auto-dependencies      =", n_auto)
-print("contemporaneous links  =", n_contemp)
-print("lagged cross-links     =", n_lagged)
-print("total links            =", len(true_edges))
+        if is_stationary:
+            accepted = True
+            break
 
-# ============================================================
-# Sanity checks
-# ============================================================
+    # ========================================================
+    # 3. Make sure a stationary model was found
+    # ========================================================
 
-assert n_auto == N
+    if not accepted:
 
-assert n_contemp == N_CONTEMP
+        raise RuntimeError(
+            "Failed to generate a stationary SCM "
+            f"within {max_attempts} attempts."
+        )
 
-assert n_lagged == N_LAGGED_CROSS
+    # ========================================================
+    # 4. Simulate observations
+    # ========================================================
 
-assert len(true_edges) == (
-    N + N_CONTEMP + N_LAGGED_CROSS
-)
-
-print("\nSanity checks passed.")
-
-for edge in true_edges:
-
-    if edge["edge_type"] == "lagged_cross":
-
-        assert edge["source"] != edge["target"]
-
-        assert 1 <= edge["lag"] <= TAU_TRUE_MAX
-
-for edge in true_edges:
-
-    if edge["edge_type"] == "contemporaneous":
-
-        assert edge["source"] != edge["target"]
-
-        assert edge["lag"] == 0
-
-for edge in true_edges:
-
-    if edge["edge_type"] == "auto":
-
-        assert edge["source"] == edge["target"]
-
-        assert edge["lag"] == 1
-
-print("Edge-type checks passed.")
-
-# ============================================================
-# Build coefficient matrices B_0, ..., B_tau_max
-# ============================================================
-
-is_stationary, spectral_radius, B_mats = (
-    check_stationarity(
+    data, noise_stds = simulate_linear_scm(
+        rng=rng,
         true_edges=true_edges,
-        n_variables=N,
-        tau_max=TAU_TRUE_MAX,
+        topological_order=model_info[
+            "topological_order"
+        ],
+        n_variables=n_variables,
+        n_samples=n_samples,
+        tau_max=tau_max,
+        burn_in=burn_in,
     )
-)
 
-for lag, B in enumerate(B_mats):
+    # ========================================================
+    # 5. Add useful metadata
+    # ========================================================
 
-    print(f"\nB_{lag}:")
-    print(np.round(B, 4))
+    model_info["noise_stds"] = noise_stds
 
-print("\nStationarity check:")
-print(
-    f"spectral radius = "
-    f"{spectral_radius:.6f}"
-)
-print(
-    "stationary =",
-    is_stationary,
-)
+    model_info["spectral_radius"] = (
+        spectral_radius
+    )
 
-if not is_stationary:
+    model_info["attempts"] = attempt
+
+    model_info["seed"] = seed
+
+    model_info["n_variables"] = (
+        n_variables
+    )
+
+    model_info["n_samples"] = (
+        n_samples
+    )
+
+    model_info["a_max"] = (
+        a_max
+    )
+
+    model_info["tau_max"] = (
+        tau_max
+    )
+
+    model_info["burn_in"] = (
+        burn_in
+    )
+
+    model_info["B_mats"] = (
+        B_mats
+    )
+
+    # ========================================================
+    # 6. Final sanity checks
+    # ========================================================
+
+    assert data.shape == (
+        n_samples,
+        n_variables,
+    )
+
+    assert np.all(
+        np.isfinite(data)
+    )
+
+    assert spectral_radius < 1.0
+
+    # ========================================================
+    # 7. Return everything needed by later experiments
+    # ========================================================
+
+    return (
+        data,
+        true_edges,
+        model_info,
+    )
+
+# ============================================================
+# 4. Helper function for printing Ground Truth
+# ============================================================
+
+def print_ground_truth(
+    true_edges,
+):
+    """
+    Pretty-print the Ground Truth causal edges.
+    """
 
     print(
-        "\nCandidate model rejected "
-        "because it is non-stationary."
+        "\nAccepted Ground Truth:"
     )
 
-    raise SystemExit
+    print("-" * 75)
 
-# ============================================================
-# Noise parameters
-# ============================================================
+    for edge in true_edges:
 
-noise_stds = rng.uniform(
-    low=0.5,
-    high=2.0,
-    size=N
-)
+        source = edge["source"]
+        target = edge["target"]
+        lag = edge["lag"]
+        coefficient = edge["coefficient"]
+        edge_type = edge["edge_type"]
 
-print("\nNoise standard deviations:")
+        if lag == 0:
 
-for j, sigma in enumerate(noise_stds):
-    print(f"X{j}: sigma={sigma:.4f}")
-
-BURN_IN = 500
-
-TOTAL_T = T + BURN_IN
-
-print("\nSimulation length:")
-print("burn-in =", BURN_IN)
-print("kept samples =", T)
-print("total simulated =", TOTAL_T)
-
-data_full = np.zeros(
-    (TOTAL_T, N),
-    dtype=float
-)
-print("\nInitial data array shape:")
-print(data_full.shape)
-
-# ============================================================
-# Simulate linear Gaussian time series
-# ============================================================
-
-for t in range(TAU_TRUE_MAX, TOTAL_T):
-
-    # Important:
-    # contemporaneous variables must be generated
-    # according to the DAG topological order.
-    for j in topological_order:
-
-        j = int(j)
-
-        # ----------------------------------------------------
-        # 1. Auto-dependency term
-        # ----------------------------------------------------
-        auto_term = (
-            auto_coeffs[j]
-            * data_full[t - 1, j]
-        )
-
-        # ----------------------------------------------------
-        # 2. Lagged cross-link term
-        # ----------------------------------------------------
-        lagged_term = 0.0
-
-        for edge in true_edges:
-
-            if edge["edge_type"] != "lagged_cross":
-                continue
-
-            if edge["target"] != j:
-                continue
-
-            source = edge["source"]
-            lag = edge["lag"]
-            coefficient = edge["coefficient"]
-
-            lagged_term += (
-                coefficient
-                * data_full[t - lag, source]
+            relation = (
+                f"X{source}(t) "
+                f"-> X{target}(t)"
             )
 
-        # ----------------------------------------------------
-        # 3. Contemporaneous term
-        # ----------------------------------------------------
-        contemp_term = 0.0
+        else:
 
-        for edge in true_edges:
-
-            if edge["edge_type"] != "contemporaneous":
-                continue
-
-            if edge["target"] != j:
-                continue
-
-            source = edge["source"]
-            coefficient = edge["coefficient"]
-
-            contemp_term += (
-                coefficient
-                * data_full[t, source]
+            relation = (
+                f"X{source}(t-{lag}) "
+                f"-> X{target}(t)"
             )
 
-        # ----------------------------------------------------
-        # 4. Gaussian dynamical noise
-        # ----------------------------------------------------
-        noise_term = rng.normal(
-            loc=0.0,
-            scale=noise_stds[j]
+        print(
+            f"{relation:<25}"
+            f"coef={coefficient:+.4f}   "
+            f"type={edge_type}"
         )
 
-        # ----------------------------------------------------
-        # Structural equation
-        # ----------------------------------------------------
-        data_full[t, j] = (
-            auto_term
-            + lagged_term
-            + contemp_term
-            + noise_term
+
+# ============================================================
+# 5. Main program
+# ============================================================
+
+def main():
+
+    # ========================================================
+    # Default Runge (2020) linear Gaussian setup
+    # ========================================================
+
+    N = 5
+    T = 500
+    A_MAX = 0.95
+    TAU_TRUE_MAX = 5
+    SEED = 0
+    BURN_IN = 500
+
+    print(
+        "Runge (2020) linear Gaussian SCM generator"
+    )
+
+    print("=" * 60)
+
+    # ========================================================
+    # Generate one complete dataset
+    # ========================================================
+
+    (
+        data,
+        true_edges,
+        model_info,
+    ) = generate_linear_scm(
+        n_variables=N,
+        n_samples=T,
+        a_max=A_MAX,
+        tau_max=TAU_TRUE_MAX,
+        seed=SEED,
+        burn_in=BURN_IN,
+    )
+
+    # ========================================================
+    # Model information
+    # ========================================================
+
+    print(
+        "\nAccepted stationary model:"
+    )
+
+    print(
+        "seed =",
+        model_info["seed"],
+    )
+
+    print(
+        "attempt =",
+        model_info["attempts"],
+    )
+
+    print(
+        "spectral radius = "
+        f"{model_info['spectral_radius']:.6f}"
+    )
+
+    print(
+        "\nTopological order:"
+    )
+
+    print(
+        model_info[
+            "topological_order"
+        ]
+    )
+
+    # ========================================================
+    # Ground Truth
+    # ========================================================
+
+    print_ground_truth(
+        true_edges
+    )
+
+    n_auto = sum(
+        edge["edge_type"] == "auto"
+        for edge in true_edges
+    )
+
+    n_contemp = sum(
+        edge["edge_type"]
+        == "contemporaneous"
+        for edge in true_edges
+    )
+
+    n_lagged = sum(
+        edge["edge_type"]
+        == "lagged_cross"
+        for edge in true_edges
+    )
+
+    print(
+        "\nGround Truth summary:"
+    )
+
+    print(
+        "auto-dependencies     =",
+        n_auto,
+    )
+
+    print(
+        "contemporaneous links =",
+        n_contemp,
+    )
+
+    print(
+        "lagged cross-links    =",
+        n_lagged,
+    )
+
+    print(
+        "total links           =",
+        len(true_edges),
+    )
+
+    # ========================================================
+    # Noise
+    # ========================================================
+
+    print(
+        "\nNoise standard deviations:"
+    )
+
+    for j, sigma in enumerate(
+        model_info["noise_stds"]
+    ):
+
+        print(
+            f"X{j}: "
+            f"sigma={sigma:.4f}"
         )
 
-data = data_full[BURN_IN:]
-print("\nGenerated time series:")
-print("full shape =", data_full.shape)
-print("final shape =", data.shape)
+    # ========================================================
+    # Data diagnostics
+    # ========================================================
 
-print("\nFirst 5 observations:")
-print(data[:5])
-print("\nColumn means:")
-print(np.mean(data, axis=0))
+    print(
+        "\nGenerated time series:"
+    )
 
-print("\nColumn standard deviations:")
-print(np.std(data, axis=0))
+    print(
+        "data shape =",
+        data.shape,
+    )
+
+    print(
+        "\nFirst 5 observations:"
+    )
+
+    print(
+        np.round(
+            data[:5],
+            4,
+        )
+    )
+
+    print(
+        "\nColumn means:"
+    )
+
+    print(
+        np.round(
+            np.mean(
+                data,
+                axis=0,
+            ),
+            4,
+        )
+    )
+
+    print(
+        "\nColumn standard deviations:"
+    )
+
+    print(
+        np.round(
+            np.std(
+                data,
+                axis=0,
+            ),
+            4,
+        )
+    )
+
+    max_abs_value = float(
+        np.max(
+            np.abs(data)
+        )
+    )
+
+    print(
+        "\nMaximum absolute value:"
+    )
+
+    print(
+        f"{max_abs_value:.4f}"
+    )
+
+    # ========================================================
+    # Final checks
+    # ========================================================
+
+    assert data.shape == (
+        T,
+        N,
+    )
+
+    assert np.all(
+        np.isfinite(data)
+    )
+
+    assert (
+        model_info[
+            "spectral_radius"
+        ]
+        < 1.0
+    )
+
+    print(
+        "\nAll checks passed."
+    )
+
 
 # ============================================================
-# NAN以及inf检查
+# Entry point
 # ============================================================
-assert data.shape == (T, N)
 
-assert np.all(np.isfinite(data))
-
-print("\nData sanity checks passed.")
-
-max_abs_value = np.max(np.abs(data))
-
-print("\nMaximum absolute value:")
-print(max_abs_value)
-
-if max_abs_value > 1e6:
-    print("WARNING: possible unstable simulation.")
+if __name__ == "__main__":
+    main()
