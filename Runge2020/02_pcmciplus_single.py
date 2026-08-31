@@ -42,6 +42,7 @@ def print_estimated_graph(
     p_matrix,
     val_matrix,
     var_names,
+    method_name="PCMCI+",
 ):
     """
     Print PCMCI+ estimated graph using the categories
@@ -67,7 +68,7 @@ def print_estimated_graph(
     n_variables = graph.shape[0]
     tau_max = graph.shape[2] - 1
 
-    print("\nPCMCI+ Estimated Graph:")
+    print(f"\n{method_name} Estimated Graph:")
     print("-" * 80)
 
     # ========================================================
