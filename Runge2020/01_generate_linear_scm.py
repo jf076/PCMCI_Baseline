@@ -327,14 +327,25 @@ def generate_candidate_structure(
     #
     for j in range(n_variables):
 
+        coefficient = float(
+            auto_coeffs[j]
+        )
+
+        # coefficient = 0 means there is no
+        # causal autodependency edge.
+        if np.isclose(
+                coefficient,
+                0.0,
+        ):
+            continue
+
         true_edges.append(
             {
                 "source": j,
                 "target": j,
                 "lag": 1,
-                "coefficient": float(
-                    auto_coeffs[j]
-                ),
+                "coefficient":
+                    coefficient,
                 "edge_type": "auto",
             }
         )

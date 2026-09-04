@@ -19,3 +19,6 @@ Thumbs.db
 
 # Local outputs
 *.log
+
+# csv
+*.csv

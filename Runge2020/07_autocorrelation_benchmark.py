@@ -4,16 +4,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from causal_methods import run_causal_method
+from causal_methods import (
+    run_causal_method,
+)
 
-def safe_divide(
-    numerator,
-    denominator,
-):
-    if denominator == 0:
-        return np.nan
 
-    return numerator / denominator
 # ============================================================
 # 1. Import generator
 # ============================================================
@@ -41,7 +36,25 @@ evaluate_graph = (
 
 
 # ============================================================
-# 3. Convert metric report to one flat result row
+# 3. Safe division
+# ============================================================
+
+def safe_divide(
+    numerator,
+    denominator,
+):
+
+    if denominator == 0:
+        return np.nan
+
+    return (
+        numerator
+        / denominator
+    )
+
+
+# ============================================================
+# 4. Flatten one run
 # ============================================================
 
 def build_result_row(
@@ -49,11 +62,10 @@ def build_result_row(
     metric_report,
     model_info,
     seed,
-    sample_size,
+    a_value,
 ):
     """
-    Convert one algorithm run into one flat row
-    suitable for CSV and pandas aggregation.
+    Convert one method run into one flat CSV row.
     """
 
     lagged = (
@@ -81,22 +93,24 @@ def build_result_row(
     )
 
     return {
-        # ----------------------------------------------------
+        # ====================================================
         # Experimental identifiers
-        # ----------------------------------------------------
+        # ====================================================
 
         "method":
-            method_result["method"],
+            method_result[
+                "method"
+            ],
 
         "seed":
             seed,
 
-        "T":
-            sample_size,
+        "a":
+            a_value,
 
-        # ----------------------------------------------------
-        # SCM metadata
-        # ----------------------------------------------------
+        # ====================================================
+        # Model metadata
+        # ====================================================
 
         "spectral_radius":
             model_info[
@@ -108,18 +122,18 @@ def build_result_row(
                 "attempts"
             ],
 
-        # ----------------------------------------------------
+        # ====================================================
         # Runtime
-        # ----------------------------------------------------
+        # ====================================================
 
         "runtime":
             method_result[
                 "runtime"
             ],
 
-        # ----------------------------------------------------
-        # Lagged cross-link adjacency
-        # ----------------------------------------------------
+        # ====================================================
+        # Lagged cross-links
+        # ====================================================
 
         "lagged_tp":
             lagged["TP"],
@@ -139,9 +153,9 @@ def build_result_row(
         "lagged_fpr":
             lagged["FPR"],
 
-        # ----------------------------------------------------
-        # Autodependency adjacency
-        # ----------------------------------------------------
+        # ====================================================
+        # Auto
+        # ====================================================
 
         "auto_tp":
             auto["TP"],
@@ -161,9 +175,9 @@ def build_result_row(
         "auto_fpr":
             auto["FPR"],
 
-        # ----------------------------------------------------
+        # ====================================================
         # Contemporaneous adjacency
-        # ----------------------------------------------------
+        # ====================================================
 
         "contemp_tp":
             contemp["TP"],
@@ -183,13 +197,9 @@ def build_result_row(
         "contemp_fpr":
             contemp["FPR"],
 
-        # ----------------------------------------------------
-        # Contemporaneous orientation
-        #
-        # IMPORTANT:
-        # These are our CURRENT operational DAG-direction
-        # metrics, not yet the final CPDAG-aware reproduction.
-        # ----------------------------------------------------
+        # ====================================================
+        # Current operational orientation metrics
+        # ====================================================
 
         "orient_correct":
             orient["correct"],
@@ -210,32 +220,19 @@ def build_result_row(
             orient["precision"],
 
         "conflict_rate":
-            orient["conflict_rate"],
+            orient[
+                "conflict_rate"
+            ],
     }
 
 
 # ============================================================
-# 4. Summarize across seeds
+# 5. Build summary
 # ============================================================
 
 def build_summary(
     raw_df,
 ):
-    """
-    Aggregate results across realizations.
-
-    For main metrics:
-        mean
-        std
-        SEM
-
-    Runtime additionally includes:
-        5th percentile
-        95th percentile
-
-    The paper reports standard errors for most metrics
-    and a 90% range for runtime.
-    """
 
     metric_columns = [
         "lagged_tpr",
@@ -260,29 +257,125 @@ def build_summary(
     grouped = raw_df.groupby(
         [
             "method",
-            "T",
+            "a",
         ],
         sort=True,
     )
 
     for (
         method,
-        sample_size,
+        a_value,
     ), group in grouped:
 
         row = {
             "method":
                 method,
 
-            "T":
-                sample_size,
+            "a":
+                a_value,
 
             "n_realizations":
-                len(group),
+                group[
+                    "seed"
+                ].nunique(),
         }
 
         # ====================================================
-        # Pooled contemporaneous orientation metrics
+        # Mean / std / SEM
+        # ====================================================
+
+        for metric in metric_columns:
+
+            values = (
+                group[metric]
+                .dropna()
+                .astype(float)
+            )
+
+            if len(values) == 0:
+
+                mean = np.nan
+                std = np.nan
+                sem = np.nan
+
+            else:
+
+                mean = (
+                    values.mean()
+                )
+
+                if len(values) > 1:
+
+                    std = (
+                        values.std(
+                            ddof=1
+                        )
+                    )
+
+                    sem = (
+                        std
+                        / np.sqrt(
+                            len(values)
+                        )
+                    )
+
+                else:
+
+                    std = np.nan
+                    sem = np.nan
+
+            row[
+                f"{metric}_mean"
+            ] = mean
+
+            row[
+                f"{metric}_std"
+            ] = std
+
+            row[
+                f"{metric}_sem"
+            ] = sem
+
+        # ====================================================
+        # Runtime 90% range
+        # ====================================================
+
+        runtime_values = (
+            group[
+                "runtime"
+            ]
+            .dropna()
+            .astype(float)
+        )
+
+        if len(runtime_values) > 0:
+
+            row[
+                "runtime_p05"
+            ] = np.percentile(
+                runtime_values,
+                5,
+            )
+
+            row[
+                "runtime_p95"
+            ] = np.percentile(
+                runtime_values,
+                95,
+            )
+
+        else:
+
+            row[
+                "runtime_p05"
+            ] = np.nan
+
+            row[
+                "runtime_p95"
+            ] = np.nan
+
+        # ====================================================
+        # Pooled orientation metrics
         # ====================================================
 
         estimated_contemp_total = (
@@ -362,94 +455,6 @@ def build_summary(
             estimated_contemp_total,
         )
 
-        for metric in metric_columns:
-
-            values = (
-                group[metric]
-                .dropna()
-                .astype(float)
-            )
-
-            if len(values) == 0:
-
-                mean = np.nan
-                std = np.nan
-                sem = np.nan
-
-            else:
-
-                mean = (
-                    values.mean()
-                )
-
-                if len(values) > 1:
-
-                    std = (
-                        values.std(
-                            ddof=1
-                        )
-                    )
-
-                    sem = (
-                        std
-                        / np.sqrt(
-                            len(values)
-                        )
-                    )
-
-                else:
-
-                    std = np.nan
-                    sem = np.nan
-
-            row[
-                f"{metric}_mean"
-            ] = mean
-
-            row[
-                f"{metric}_std"
-            ] = std
-
-            row[
-                f"{metric}_sem"
-            ] = sem
-
-        # ----------------------------------------------------
-        # Runtime 90% empirical range
-        # ----------------------------------------------------
-
-        runtime_values = (
-            group["runtime"]
-            .dropna()
-            .astype(float)
-        )
-
-        if len(runtime_values) > 0:
-
-            row[
-                "runtime_p05"
-            ] = np.percentile(
-                runtime_values,
-                5,
-            )
-
-            row[
-                "runtime_p95"
-            ] = np.percentile(
-                runtime_values,
-                95,
-            )
-
-        else:
-
-            row[
-                "runtime_p05"
-            ] = np.nan
-
-            row[
-                "runtime_p95"
-            ] = np.nan
-
         summary_rows.append(
             row
         )
@@ -460,18 +465,18 @@ def build_summary(
 
 
 # ============================================================
-# 5. Main benchmark
+# 6. Main experiment
 # ============================================================
 
 def main():
 
     # ========================================================
-    # Runge (2020) Figure 2C-style setup
+    # Figure 2A-style fixed parameters
     # ========================================================
 
     N = 5
 
-    A_MAX = 0.95
+    T = 500
 
     TAU_MAX = 5
 
@@ -479,30 +484,28 @@ def main():
 
     BURN_IN = 500
 
-    # --------------------------------------------------------
-    # Sample sizes used in Figure 2C
-    # --------------------------------------------------------
+    # ========================================================
+    # Runge Figure 2A autocorrelation values
+    # ========================================================
 
-    T_VALUES = [
-        200,
-        500,
-        1000,
+    A_VALUES = [
+        0.0,
+        0.4,
+        0.6,
+        0.9,
+        0.98,
+        0.999,
     ]
 
-    # --------------------------------------------------------
-    # FIRST dry run:
+    # ========================================================
+    # First validation run
     #
-    # N_SEEDS = 5
-    #
-    # After validation:
-    #
-    # N_SEEDS = 20
-    #
-    # Paper final experiments use much more
-    # (500 realizations).
-    # --------------------------------------------------------
+    # 5 -> pipeline check
+    # 20 -> initial trend study
+    # 500 -> paper-scale experiment
+    # ========================================================
 
-    N_SEEDS = 20
+    N_SEEDS = 5
 
     METHODS = [
         "PCMCI+",
@@ -515,11 +518,13 @@ def main():
     ]
 
     # ========================================================
-    # Output directory
+    # Output
     # ========================================================
 
     output_dir = (
-        Path(__file__).resolve().parent
+        Path(__file__)
+        .resolve()
+        .parent
         / "results"
     )
 
@@ -530,24 +535,46 @@ def main():
 
     raw_path = (
         output_dir
-        / "05_sample_size_raw.csv"
+        / "07_autocorrelation_raw.csv"
     )
 
     summary_path = (
         output_dir
-        / "05_sample_size_summary.csv"
+        / "07_autocorrelation_summary.csv"
     )
 
     print(
         "Runge (2020) - "
-        "Sample-size benchmark"
+        "Figure 2A-style autocorrelation benchmark"
     )
 
-    print("=" * 72)
+    print(
+        "=" * 78
+    )
 
     print(
-        "T values =",
-        T_VALUES,
+        "N =",
+        N,
+    )
+
+    print(
+        "T =",
+        T,
+    )
+
+    print(
+        "tau_max =",
+        TAU_MAX,
+    )
+
+    print(
+        "pc_alpha =",
+        PC_ALPHA,
+    )
+
+    print(
+        "a values =",
+        A_VALUES,
     )
 
     print(
@@ -555,44 +582,37 @@ def main():
         N_SEEDS,
     )
 
-    print(
-        "methods =",
-        METHODS,
-    )
-
-    print()
-
     # ========================================================
-    # Raw experiment rows
+    # Total method runs
     # ========================================================
-
-    rows = []
 
     total_runs = (
-        len(T_VALUES)
+        len(A_VALUES)
         * N_SEEDS
         * len(METHODS)
     )
 
     run_index = 0
 
+    rows = []
+
     # ========================================================
-    # Benchmark loop
+    # Benchmark
     # ========================================================
 
-    for sample_size in T_VALUES:
+    for a_value in A_VALUES:
 
         print(
             "\n"
-            + "=" * 72
+            + "=" * 78
         )
 
         print(
-            f"T = {sample_size}"
+            f"a = {a_value}"
         )
 
         print(
-            "=" * 72
+            "=" * 78
         )
 
         for seed in range(
@@ -600,9 +620,7 @@ def main():
         ):
 
             # =================================================
-            # IMPORTANT:
-            # Generate dataset ONCE for this (T, seed).
-            # Both algorithms receive exactly this same data.
+            # Generate ONE dataset for this (a, seed)
             # =================================================
 
             (
@@ -611,8 +629,8 @@ def main():
                 model_info,
             ) = generate_linear_scm(
                 n_variables=N,
-                n_samples=sample_size,
-                a_max=A_MAX,
+                n_samples=T,
+                a_max=a_value,
                 tau_max=TAU_MAX,
                 seed=seed,
                 burn_in=BURN_IN,
@@ -621,11 +639,13 @@ def main():
             print(
                 f"\nSeed {seed:3d} | "
                 f"rho="
-                f"{model_info['spectral_radius']:.4f}"
+                f"{model_info['spectral_radius']:.4f} | "
+                f"attempt="
+                f"{model_info['attempts']}"
             )
 
             # =================================================
-            # Run both methods on SAME data
+            # Same data -> both methods
             # =================================================
 
             for method in METHODS:
@@ -651,10 +671,6 @@ def main():
                     )
                 )
 
-                # =============================================
-                # Evaluate
-                # =============================================
-
                 metric_report = (
                     evaluate_graph(
                         true_edges=
@@ -670,10 +686,6 @@ def main():
                     )
                 )
 
-                # =============================================
-                # Flatten result
-                # =============================================
-
                 row = build_result_row(
                     method_result=
                         method_result,
@@ -686,8 +698,8 @@ def main():
 
                     seed=seed,
 
-                    sample_size=
-                        sample_size,
+                    a_value=
+                        a_value,
                 )
 
                 rows.append(
@@ -702,12 +714,14 @@ def main():
                     f"{row['lagged_fpr']:.3f} "
                     f"conTPR="
                     f"{row['contemp_tpr']:.3f} "
+                    f"orientR="
+                    f"{row['orient_recall_op']:.3f} "
                     f"time="
                     f"{row['runtime']:.3f}s"
                 )
 
     # ========================================================
-    # Save raw results
+    # Save raw
     # ========================================================
 
     raw_df = pd.DataFrame(
@@ -720,11 +734,13 @@ def main():
     )
 
     # ========================================================
-    # Aggregate across seeds
+    # Summary
     # ========================================================
 
-    summary_df = build_summary(
-        raw_df
+    summary_df = (
+        build_summary(
+            raw_df
+        )
     )
 
     summary_df.to_csv(
@@ -733,37 +749,58 @@ def main():
     )
 
     # ========================================================
-    # Print concise summary
+    # Console summary
     # ========================================================
 
     print(
         "\n"
-        + "=" * 72
+        + "=" * 78
     )
 
     print(
-        "Benchmark summary"
+        "Autocorrelation benchmark summary"
     )
 
     print(
-        "=" * 72
+        "=" * 78
     )
 
+    # display_columns = [
+    #     "method",
+    #     "a",
+    #
+    #     "lagged_tpr_mean",
+    #     "lagged_fpr_mean",
+    #
+    #     "contemp_tpr_mean",
+    #     "contemp_fpr_mean",
+    #
+    #     "orient_recall_op_mean",
+    #
+    #     "orient_precision_op_mean",
+    #
+    #     "conflict_rate_mean",
+    #
+    #     "runtime_mean",
+    # ]
     display_columns = [
         "method",
-        "T",
+        "a",
 
         "lagged_tpr_mean",
         "lagged_fpr_mean",
 
-        "auto_tpr_mean",
-        "auto_fpr_mean",
-
         "contemp_tpr_mean",
-        "contemp_fpr_mean",
 
         "orient_recall_op_mean",
+
         "orient_precision_op_mean",
+        "orient_precision_op_pooled",
+
+        "conflict_rate_mean",
+        "conflict_rate_pooled",
+
+        "estimated_contemp_total",
 
         "runtime_mean",
     ]
@@ -773,13 +810,15 @@ def main():
             display_columns
         ].to_string(
             index=False,
-            float_format=lambda x:
+
+            float_format=
+                lambda x:
                 f"{x:.4f}",
         )
     )
 
     print(
-        "\nRaw results saved to:"
+        "\nRaw results:"
     )
 
     print(
@@ -787,7 +826,7 @@ def main():
     )
 
     print(
-        "\nSummary saved to:"
+        "\nSummary:"
     )
 
     print(
@@ -795,13 +834,9 @@ def main():
     )
 
     print(
-        "\n05 sample-size benchmark completed."
+        "\n07 autocorrelation benchmark completed."
     )
 
-
-# ============================================================
-# Entry point
-# ============================================================
 
 if __name__ == "__main__":
     main()
