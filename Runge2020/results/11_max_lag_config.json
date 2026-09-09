@@ -1,0 +1,29 @@
+{
+    "experiment_name": "max_lag",
+    "x_column": "search_tau_max",
+    "x_values": [
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40
+    ],
+    "fixed_params": {
+        "N": 5,
+        "T": 500,
+        "a": 0.95,
+        "true_tau_max": 5
+    },
+    "methods": [
+        "GCresPC",
+        "LiNGAM",
+        "PC",
+        "PCMCI+"
+    ],
+    "n_seeds": 5,
+    "pc_alpha": 0.01,
+    "burn_in": 500
+}

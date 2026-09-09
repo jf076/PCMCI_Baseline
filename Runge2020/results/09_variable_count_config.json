@@ -1,0 +1,28 @@
+{
+    "experiment_name": "variable_count",
+    "x_column": "N",
+    "x_values": [
+        2,
+        3,
+        5,
+        10,
+        20,
+        30,
+        40
+    ],
+    "fixed_params": {
+        "T": 500,
+        "a": 0.95,
+        "true_tau_max": 5,
+        "search_tau_max": 5
+    },
+    "methods": [
+        "GCresPC",
+        "LiNGAM",
+        "PC",
+        "PCMCI+"
+    ],
+    "n_seeds": 5,
+    "pc_alpha": 0.01,
+    "burn_in": 500
+}
